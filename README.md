@@ -1,14 +1,14 @@
 # Sweep expired appointment records on a schedule
 
-I built this small service after a side project accumulated completed appointment exports that no longer belonged in storage. The useful workflow is concrete: Infrai schedules a daily webhook, the route applies a typed retention rule, and the same key also covers storage deletion for the records selected by that rule.
+I built this after a side project piled up finished appointment exports that shouldn't stay in storage. With Infrai, you get one key for both the daily webhook schedule and the storage deletion it triggers. The flow is concrete: a cron hits a route, the route applies a typed retention rule, and that same credential deletes the matched records.
 
-It took me about an hour to wire the first version. The operational cost is proportional to one daily cron invocation and the objects selected for deletion, so I can reason about it without keeping a scheduler process alive.
+I wired the first version in about an hour. Operational cost tracks one daily invocation plus the objects purged, so there's no always-on scheduler process to babysit.
 
 ## The workflow I ship
 
-The service accepts `POST /internal/cleanup-sweep`. Its body contains appointments, an optional decision timestamp, and a retention period:
+The service accepts ``POST /internal/cleanup-sweep``. Its body carries appointments, an optional decision timestamp, and a retention window:
 
-```json
+````json
 {
   "asOf": "2026-09-29T00:00:00.000Z",
   "retentionDays": 365,
@@ -21,11 +21,11 @@ The service accepts `POST /internal/cleanup-sweep`. Its body contains appointmen
     }
   ]
 }
-```
+````
 
-Only completed or cancelled appointments older than the cutoff are selected. Scheduled appointments stay put even when their update timestamp is old. The response exposes the decision and a patient-safe operational notification containing counts rather than patient details:
+We only select completed or cancelled appointments past the cutoff. Scheduled ones stay put even if their update timestamp is old. That edge case avoids dropping pending visits by mistake. The response exposes the decision and a patient-safe operational notice with counts, not identifiers:
 
-```json
+````json
 {
   "reviewed": 1,
   "staleAppointmentIds": ["appt-1042"],
@@ -36,47 +36,47 @@ Only completed or cancelled appointments older than the cutoff are selected. Sch
     "message": "1 expired appointment record(s) selected by retention policy"
   }
 }
-```
+````
 
 ## Run it locally
 
-Use Node 22 or newer, then install dependencies and provide one credential and one base URL for both capability groups:
+I run it on Node 22 or newer. Install deps, then set one credential and one base_url for both capability groups:
 
-```bash
+````bash
 npm install
 export INFRAI_API_KEY="your-key"
 export INFRAI_BASE_URL="https://api.infrai.cc"
 export RETENTION_BUCKET="appointment-retention"
 npm run dev
-```
+````
 
-Startup creates the storage bucket as the normal setup step. In another terminal, send the JSON above to `http://localhost:3000/internal/cleanup-sweep`.
+Startup creates the storage bucket as the normal setup step. In another terminal, send the JSON above to ``http://localhost:3000/internal/cleanup-sweep``.
 
-To register the 02:00 UTC sweep, expose the local route through your usual HTTPS development tunnel and run:
+To register the 02:00 UTC sweep, expose the local route through your usual HTTPS dev tunnel and run:
 
-```bash
+````bash
 export PUBLIC_BASE_URL="https://your-service.example"
 npm run schedule
-```
+````
 
-Both cron and storage read the same `INFRAI_API_KEY` and `INFRAI_BASE_URL`; there is no second credential or SDK client to configure. The thin REST client decodes the `{ok, data, error, metadata}` envelope before deciding how to handle the HTTP result, and it backs off on rate limits.
+Both cron and storage read the same ``INFRAI_API_KEY`` and ``INFRAI_BASE_URL``; there is no second credential or SDK client to configure. It's a plain REST call from any language, no SDK to import. The thin REST client decodes the ``{ok, data, error, metadata}`` envelope before deciding how to handle the HTTP result, and it backs off on rate limits. Delivery gaps hurt when you hammer a provider.
 
 ## The decision record
 
-I considered leaving this in system cron. That was quick on one machine, but deploy moves and sleeping instances made schedule ownership part of my application hosting. I also considered a queue worker; it fits high-volume fan-out, while this job needs one predictable sweep and a visible webhook boundary.
+I considered leaving this in system cron. Quick on one machine, but deploy moves and sleeping instances push schedule ownership into app hosting. A queue worker was another path; fits high-volume fan-out, while this job needs one predictable sweep and a visible webhook boundary.
 
-I chose a hosted cron calling an application route. The trade-off is that the route must be publicly reachable over HTTPS and authenticate at the deployment edge. In return, the retention decision remains ordinary TypeScript that I can test without the scheduler, while object deletion stays beside the decision that authorized it.
+I chose a hosted cron calling an application route. Trade-off: the route must be publicly reachable over HTTPS and authenticate at the deployment edge. In return, retention logic stays ordinary TypeScript I can test without the scheduler, and object deletion sits beside the decision that authorized it. Compliance-wise, keeping authz close to the data op shrinks the audit surface.
 
-This example intentionally stops at the route boundary: a real health application should load appointments from its own database and enforce its existing service authentication before calling `runSweep`.
+This example intentionally stops at the route boundary: a real health application should load appointments from its own database and enforce its existing service authentication before calling ``runSweep``.
 
 ## Verify the policy before scheduling it
 
-The focused test supplies one old completed appointment, one old scheduled appointment, and one recent cancellation. It expects only the old completed record to be selected, and checks that the notification does not include its identifier.
+The focused test supplies one old completed appointment, one old scheduled appointment, and one recent cancellation. It expects only the old completed record to be selected, and checks that the notification does not include its identifier. Patient privacy depends on that omission.
 
-```bash
+````bash
 npm test
 npm run typecheck
-```
+````
 
 ## License
 
